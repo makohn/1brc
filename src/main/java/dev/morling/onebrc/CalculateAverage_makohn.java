@@ -27,12 +27,12 @@ public class CalculateAverage_makohn {
     private static final String FILE = "./measurements.txt";
 
     private static class Measurement {
-        double min;
-        double max;
+        int min;
+        int max;
         int count = 1;
-        double sum;
+        int sum;
 
-        Measurement(double val) {
+        Measurement(int val) {
             this.min = val;
             this.max = val;
             this.sum = val;
@@ -40,11 +40,11 @@ public class CalculateAverage_makohn {
 
         @Override
         public String toString() {
-            return round(min) + "/" + round(sum / count) + "/" + round(max);
+            return round(min) + "/" + round((1.0 * sum) / count) + "/" + round(max);
         }
 
         private double round(double value) {
-            return Math.round(value * 10.0) / 10.0;
+            return Math.round(value) / 10.0;
         }
     }
 
@@ -58,7 +58,7 @@ public class CalculateAverage_makohn {
             for (final var line : chunk) {
                 final var kv = line.split(";");
                 final var key = kv[0];
-                final var value = Double.parseDouble(kv[1]);
+                final var value = toInt(kv[1]);
                 if (map.containsKey(key)) {
                     final var current = map.get(key);
                     current.min = Math.min(current.min, value);
@@ -73,6 +73,21 @@ public class CalculateAverage_makohn {
             return map;
         }
 
+    }
+
+    static final int[] POWERS_OF_10 = {1, 1, 10, 100, 1000};
+    private static int toInt(String s) {
+        int res = 0;
+        final var len = s.length();
+        for (int i = len-1; i >= 0; i--) {
+            final var c = s.charAt(i);
+            switch (c) {
+                case '-' -> res *= -1;
+                case '.' -> {}
+                default -> res += (c - '0') * POWERS_OF_10[len-i-1];
+            }
+        }
+        return res;
     }
 
     public static void main(String[] args) throws Exception {
