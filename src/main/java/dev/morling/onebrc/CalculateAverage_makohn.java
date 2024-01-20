@@ -15,12 +15,16 @@
  */
 package dev.morling.onebrc;
 
-import java.nio.file.Files;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.stream.Collectors;
 
 public class CalculateAverage_makohn {
 
@@ -40,7 +44,7 @@ public class CalculateAverage_makohn {
 
         @Override
         public String toString() {
-            return round(min) + "/" + round((1.0 * sum) / count) + "/" + round(max);
+            return STR."\{round(min)}/\{round((1.0 * sum) / count)}/\{round(max)}";
         }
 
         private double round(double value) {
@@ -48,79 +52,136 @@ public class CalculateAverage_makohn {
         }
     }
 
-    private static final int CHUNK_SIZE = 1_000_000;
+    // Additional 1 to account for index shift due to '.'
+    // (Only works because given temperatures always have exactly one decimal)
+    private static final int[] POWERS_OF_10 = { 1, 1, 10, 100, 1000 };
 
-    private record ChunkProcessor(List<String> chunk, int chunkNr) implements Callable<Map<String, Measurement>> {
-
-        @Override
-        public Map<String, Measurement> call() {
-            final var map = new HashMap<String, Measurement>(CHUNK_SIZE);
-            for (final var line : chunk) {
-                final var kv = line.split(";");
-                final var key = kv[0];
-                final var value = toInt(kv[1]);
-                if (map.containsKey(key)) {
-                    final var current = map.get(key);
-                    current.min = Math.min(current.min, value);
-                    current.max = Math.max(current.max, value);
-                    current.count++;
-                    current.sum += value;
-                }
-                else {
-                    map.put(key, new Measurement(value));
-                }
-            }
-            return map;
-        }
-
-    }
-
-    static final int[] POWERS_OF_10 = {1, 1, 10, 100, 1000};
-    private static int toInt(String s) {
+    // Convert a given byte array of temperature data to an int value
+    //
+    // Lets say we have the following "byte" array: ['-', '1', '2', '.', '5'] (converted to chars for readability)
+    //
+    // We reverse-iterate the array adding each digit to an accumulator.
+    // But first we multiply by a power of 10 to account for the digit's position.
+    //
+    // So in the example:
+    //
+    // res = 0
+    // '5' -> res += 5 * 1 -> 5
+    // '.' -> ignore
+    // '2' -> res += 2 * 10 -> 5 + 20 = 25
+    // '1' -> res += 1 * 100 -> 25 + 100 = 125
+    // '-' -> res *= -1 -> 125 * -1 = -125
+    //
+    // Since the temperate values only have one decimal, we can use integer arithmetic until the end
+    //
+    private static int toInt(byte[] in) {
         int res = 0;
-        final var len = s.length();
-        for (int i = len-1; i >= 0; i--) {
-            final var c = s.charAt(i);
+        final var len = in.length;
+        for (int i = len - 1; i >= 0; i--) {
+            final var c = in[i] & 0xFF; // byte to char
             switch (c) {
                 case '-' -> res *= -1;
-                case '.' -> {}
-                default -> res += (c - '0') * POWERS_OF_10[len-i-1];
+                case '.' -> {
+                    /* noop */ }
+                default -> res += (c - '0') * POWERS_OF_10[len - i - 1];
             }
         }
         return res;
     }
 
-    public static void main(String[] args) throws Exception {
-        try (final var in = Files.lines(Paths.get(FILE));
-             final var executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())) {
-            final var spliterator = in.spliterator();
-            final var futures = new ArrayList<Future<Map<String, Measurement>>>();
-            int nr = 0;
-            while (true) {
-                final var chunk = new ArrayList<String>(CHUNK_SIZE);
-                int i = 0;
-                while (i < CHUNK_SIZE && spliterator.tryAdvance(chunk::add))
-                    i++;
-                if (chunk.isEmpty())
-                    break;
-                futures.add(executor.submit(new ChunkProcessor(chunk, nr)));
-                nr++;
-            }
-            final var res = new TreeMap<>(futures.removeFirst().get());
-            for (final var future : futures) {
-                final var tmp = future.get();
-                for (final var entry : tmp.entrySet()) {
-                    final var key = entry.getKey();
-                    final var value = entry.getValue();
-                    if (res.containsKey(key)) {
-                        final var cur = res.get(key);
-                        cur.min = Math.min(cur.min, value.min);
-                        cur.max = Math.max(cur.max, value.max);
-                        cur.count += value.count;
-                        cur.sum += value.sum;
+    private static Collection<ByteBuffer> getChunks(MemorySegment memory, long chunkSize, long fileSize) {
+        final var chunks = new ArrayList<ByteBuffer>();
+        var chunkStart = 0L;
+        var chunkEnd = 0L;
+        while (chunkStart < fileSize) {
+            chunkEnd = Math.min((chunkStart + chunkSize), fileSize);
+            // starting from the calculated chunkEnd, seek the next newline to get the real chunkEnd
+            while (chunkEnd < fileSize && (memory.getAtIndex(ValueLayout.JAVA_BYTE, chunkEnd) & 0xFF) != '\n')
+                chunkEnd++;
+            // we have found our chunk boundaries, add a slice of memory with these boundaries to our list of chunks
+            chunks.add(memory.asSlice(chunkStart, chunkEnd - chunkStart).asByteBuffer());
+            // next chunk
+            chunkStart = chunkEnd + 1;
+        }
+        return chunks;
+    }
+
+    // Station name: <= 100 bytes
+    // Temperature: <= 5 bytes
+    //
+    // Semicolon and new line are ignored
+    private static final int MAX_BYTES_PER_ROW = 105;
+
+    private static Map<String, Measurement> processChunk(ByteBuffer chunk) {
+        final var map = new HashMap<String, Measurement>();
+        final var buffer = new byte[MAX_BYTES_PER_ROW];
+        var i = 0;
+        var delimiter = 0;
+        while (chunk.hasRemaining()) {
+            final var c = chunk.get();
+            switch (c & 0xFF) {
+                case ';' -> delimiter = i;
+                case '\n' -> {
+                    final var city = Arrays.copyOfRange(buffer, 0, delimiter);
+                    final var temp = Arrays.copyOfRange(buffer, delimiter, i);
+                    final var key = new String(city, StandardCharsets.UTF_8);
+                    final var value = toInt(temp);
+                    if (map.containsKey(key)) {
+                        final var current = map.get(key);
+                        current.min = Math.min(current.min, value);
+                        current.max = Math.max(current.max, value);
+                        current.count++;
+                        current.sum += value;
                     }
+                    else {
+                        map.put(key, new Measurement(value));
+                    }
+                    i = 0;
+                    delimiter = 0;
+                }
+                default -> {
+                    buffer[i] = c;
+                    i++;
                 }
             }
+        }
+        return map;
+    }
+
+    public static void main(String[] args) throws Exception {
+        final var numProcessors = Runtime.getRuntime().availableProcessors();
+        // memory-map the input file
+        try (final var channel = FileChannel.open(Paths.get(FILE), StandardOpenOption.READ)) {
+            final var fileSize = channel.size();
+            final var chunkSize = (fileSize / numProcessors);
+            final var mappedMemory = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize, Arena.global());
+            // process the mapped data concurrently in chunks. Each chunk is processed on a dedicated thread
+            final var chunks = getChunks(mappedMemory, chunkSize, fileSize);
+            final var processed = chunks
+                    .parallelStream()
+                    .map(CalculateAverage_makohn::processChunk)
+                    .collect(Collectors.toList()); // materialize and thus synchronize
+            // merge the results, we can initialize with the first result, to avoid redundant key-checks
+            final var first = processed.removeFirst();
+            final var res = processed
+                    .stream()
+                    .reduce(new TreeMap<>(first), (acc, partial) -> {
+                        for (final var entry : partial.entrySet()) {
+                            final var key = entry.getKey();
+                            final var value = entry.getValue();
+                            if (acc.containsKey(key)) {
+                                final var cur = acc.get(key);
+                                cur.min = Math.min(cur.min, value.min);
+                                cur.max = Math.max(cur.max, value.max);
+                                cur.count += value.count;
+                                cur.sum += value.sum;
+                            }
+                            else {
+                                acc.put(key, value);
+                            }
+                        }
+                        return acc;
+                    });
             System.out.println(res);
         }
     }
