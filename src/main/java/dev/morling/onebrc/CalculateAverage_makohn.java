@@ -117,10 +117,13 @@ public class CalculateAverage_makohn {
         final var buffer = new byte[MAX_BYTES_PER_ROW];
         var i = 0;
         var delimiter = 0;
+        // Process the chunk byte by byte and store each line in buffer
         while (chunk.hasRemaining()) {
             final var c = chunk.get();
             switch (c & 0xFF) {
+                // Memorize the position of the semicolon, such that we can divide the buffer afterward
                 case ';' -> delimiter = i;
+                // If we encounter newline, we can do the actual calculations for the current line
                 case '\n' -> {
                     final var city = Arrays.copyOfRange(buffer, 0, delimiter);
                     final var temp = Arrays.copyOfRange(buffer, delimiter, i);
