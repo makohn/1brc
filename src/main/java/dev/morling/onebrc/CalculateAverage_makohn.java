@@ -71,7 +71,7 @@ public class CalculateAverage_makohn {
     //
     // buffer: [..., '-', '1', '9', '.', '7', ...]
     // -------------> offset
-    //              = s
+    // ............ = s
     //
     // We initialize a "pointer" s with the offset. Depending on whether the first char is a '-' or not, we set the
     // sign and increment the pointer.
@@ -130,7 +130,7 @@ public class CalculateAverage_makohn {
     //
     // 16390 : 100000000000110
     // 16383 : 011111111111111
-    // &       000000000000110 = 3
+    // ....... 000000000000110 = 3
     private static int linearProbe(ResultMap res, String key) {
         var hash = key.hashCode() & (MAP_CAPACITY - 1);
         while (res.map[hash] > 0 && !(res.measurements[res.map[hash]].city.equals(key))) {
@@ -220,7 +220,8 @@ public class CalculateAverage_makohn {
                         current.max = Math.max(current.max, value);
                         current.count++;
                         current.sum += value;
-                    } else {
+                    }
+                    else {
                         map.put(hash, new Measurement(key, value));
                     }
                     i = 0;
@@ -235,8 +236,12 @@ public class CalculateAverage_makohn {
         return map;
     }
 
+    // File size is approximately 13 GB, ByteBuffer has a 2 GB limit
+    // Chunks should have a maximum size of approximately 13 GB / 8 = 1.625 GB
+    private static final int MIN_NUMBER_THREADS = 8;
+
     public static void main(String[] args) throws Exception {
-        final var numProcessors = Runtime.getRuntime().availableProcessors();
+        final var numProcessors = Math.max(Runtime.getRuntime().availableProcessors(), MIN_NUMBER_THREADS);
         // memory-map the input file
         try (final var channel = FileChannel.open(Paths.get(FILE), StandardOpenOption.READ)) {
             final var fileSize = channel.size();
@@ -262,7 +267,8 @@ public class CalculateAverage_makohn {
                                 cur.max = Math.max(cur.max, value.max);
                                 cur.count += value.count;
                                 cur.sum += value.sum;
-                            } else {
+                            }
+                            else {
                                 acc.put(hash, value);
                             }
                         }
