@@ -52,10 +52,6 @@ public class CalculateAverage_makohn {
         }
     }
 
-    // Additional 1 to account for index shift due to '.'
-    // (Only works because given temperatures always have exactly one decimal)
-    private static final int[] POWERS_OF_10 = { 1, 1, 10, 100, 1000 };
-
     // Convert a given byte array of temperature data to an int value
     //
     // Lets say we have the following "byte" array: ['-', '1', '2', '.', '5'] (converted to chars for readability)
@@ -74,18 +70,18 @@ public class CalculateAverage_makohn {
     //
     // Since the temperate values only have one decimal, we can use integer arithmetic until the end
     //
-    private static int toInt(byte[] in, int offset, int length) {
-        int res = 0;
-        for (int i = length - 1; i >= offset; i--) {
-            final var c = in[i] & 0xFF; // byte to char
-            switch (c) {
-                case '-' -> res *= -1;
-                case '.' -> {
-                    /* noop */ }
-                default -> res += (c - '0') * POWERS_OF_10[length - i - 1];
-            }
+    private static int toInt(byte[] in, int offset) {
+        int sign = 1;
+        int s = offset;
+        if ((in[s] & 0xFF) == '-') {
+            sign = -1;
+            s++;
         }
-        return res;
+
+        if ((in[s+1] & 0xFF) == '.')
+            return sign * (((in[s] & 0xFF) - '0') * 10 + ((in[s+2] & 0xFF) - '0'));
+
+        return sign * (((in[s] & 0xFF) - '0') * 100 + ((in[s+1] & 0xFF) - '0') * 10 + ((in[s+3] & 0xFF) - '0'));
     }
 
     private static Collection<ByteBuffer> getChunks(MemorySegment memory, long chunkSize, long fileSize) {
@@ -125,7 +121,7 @@ public class CalculateAverage_makohn {
                 // If we encounter newline, we can do the actual calculations for the current line
                 case '\n' -> {
                     final var key = new String(buffer, 0, delimiter, StandardCharsets.UTF_8);
-                    final var value = toInt(buffer, delimiter, i);
+                    final var value = toInt(buffer, delimiter);
                     if (map.containsKey(key)) {
                         final var current = map.get(key);
                         current.min = Math.min(current.min, value);
