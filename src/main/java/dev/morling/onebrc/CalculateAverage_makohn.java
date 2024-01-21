@@ -73,15 +73,15 @@ public class CalculateAverage_makohn {
     private static int toInt(byte[] in, int offset) {
         int sign = 1;
         int s = offset;
-        if ((in[s] & 0xFF) == '-') {
+        if (in[s] == '-') {
             sign = -1;
             s++;
         }
 
-        if ((in[s+1] & 0xFF) == '.')
-            return sign * (((in[s] & 0xFF) - '0') * 10 + ((in[s+2] & 0xFF) - '0'));
+        if (in[s+1] == '.')
+            return sign * ((in[s] - '0') * 10 + (in[s+2] - '0'));
 
-        return sign * (((in[s] & 0xFF) - '0') * 100 + ((in[s+1] & 0xFF) - '0') * 10 + ((in[s+3] & 0xFF) - '0'));
+        return sign * ((in[s] - '0') * 100 + (in[s+1] - '0') * 10 + (in[s+3] - '0'));
     }
 
     private static Collection<ByteBuffer> getChunks(MemorySegment memory, long chunkSize, long fileSize) {
